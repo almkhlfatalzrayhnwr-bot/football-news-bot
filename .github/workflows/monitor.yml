@@ -1,169 +1,39 @@
-#!/usr/bin/env python3
-"""
-بوت مراقبة أخبار كرة القدم - نسخة GitHub Actions (بدون أي جهاز شخصي)
-======================================================================
-المصدر: RSS Feeds (مجانية)
-التصنيف: كلمات مفتاحية (بدون AI، مجاني وحتمي 100%)
-الإشعار: Telegram Bot API (مجاني)
-التخزين: ملف JSON داخل المستودع نفسه (يُحدَّث ويُحفظ عبر git commit تلقائي)
-"""
+name: مراقبة أخبار كرة القدم
 
-import json
-import os
-import sys
-import time
-import logging
-import feedparser
-import requests
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # كل 5 دقائق (الحد الأدنى المسموح في GitHub Actions)
+  workflow_dispatch: {}      # يسمح بالتشغيل اليدوي من تطبيق/موقع GitHub لأي وقت
 
-# ============================================================
-# الإعدادات
-# ============================================================
+permissions:
+  contents: write            # مطلوب لحفظ ملف الحالة (processed_articles.json) داخل المستودع
 
-RSS_FEEDS = [
-    "http://feeds.bbci.co.uk/sport/football/rss.xml",
-    "https://www.skysports.com/rss/12040",
-]
+jobs:
+  check-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: سحب المستودع
+        uses: actions/checkout@v4
 
-STATE_FILE = "processed_articles.json"
+      - name: تجهيز بايثون
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-# التوكن والـ chat id يُقرآن من متغيرات البيئة (GitHub Secrets) وليس من الكود مباشرة
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+      - name: تثبيت المتطلبات
+        run: pip install feedparser requests
 
-REQUEST_TIMEOUT = 15
-MAX_RETRIES = 3
+      - name: تشغيل المراقبة
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monitor.py
 
-# قواعد التصنيف بالكلمات المفتاحية (يمكن التوسع فيها بسهولة)
-CATEGORY_RULES = {
-    "نتيجة": ["فاز", "خسر", "تعادل", "هدف", "نتيجة", "beat", "win", "draw", "score", "result"],
-    "انتقالات": ["انتقال", "صفقة", "تعاقد", "يوقع", "ينتقل", "transfer", "signing", "sign for", "deal"],
-    "إصابة": ["إصابة", "يغيب", "غاب", "injury", "injured", "out for", "sidelined"],
-}
-DEFAULT_CATEGORY = "أخرى"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-log = logging.getLogger("football_monitor")
-
-
-# ============================================================
-# التخزين (state) — ملف JSON
-# ============================================================
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            log.warning(f"تعذّرت قراءة ملف الحالة، سيُبدأ من جديد: {e}")
-    return {"processed_links": []}
-
-
-def save_state(state):
-    # نحتفظ فقط بآخر 500 رابط لمنع نمو الملف بلا حدود
-    state["processed_links"] = state["processed_links"][-500:]
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-
-# ============================================================
-# جلب المقالات الجديدة
-# ============================================================
-
-def fetch_new_articles(processed_links):
-    new_articles = []
-    processed_set = set(processed_links)
-
-    for feed_url in RSS_FEEDS:
-        try:
-            parsed = feedparser.parse(feed_url)
-            if parsed.bozo:
-                log.warning(f"تحذير عند قراءة {feed_url}: {parsed.bozo_exception}")
-            for entry in parsed.entries:
-                link = entry.get("link", "")
-                title = entry.get("title", "")
-                summary = entry.get("summary", "")
-                if link and link not in processed_set:
-                    new_articles.append({"link": link, "title": title, "summary": summary})
-        except Exception as e:
-            log.error(f"فشل جلب {feed_url}: {e}")
-
-    return new_articles
-
-
-# ============================================================
-# التصنيف بالكلمات المفتاحية (بدون AI — حتمي وسريع ومجاني)
-# ============================================================
-
-def classify(title, summary):
-    text = f"{title} {summary}".lower()
-    for category, keywords in CATEGORY_RULES.items():
-        for kw in keywords:
-            if kw.lower() in text:
-                return category
-    return DEFAULT_CATEGORY
-
-
-# ============================================================
-# إشعار Telegram
-# ============================================================
-
-def send_telegram_notification(title, link, category):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("لم يتم ضبط TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — تخطي الإشعار")
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    text = f"⚽ [{category}]\n{title}\n{link}"
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = requests.post(
-                url,
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
-                timeout=REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
-            return True
-        except requests.exceptions.RequestException as e:
-            log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال إشعار Telegram: {e}")
-            time.sleep(attempt * 2)
-
-    log.error(f"فشل إرسال الإشعار نهائياً للمقال: {title}")
-    return False
-
-
-# ============================================================
-# التشغيل الرئيسي
-# ============================================================
-
-def main():
-    log.info("بدء دورة فحص جديدة")
-    state = load_state()
-
-    new_articles = fetch_new_articles(state["processed_links"])
-    log.info(f"عدد المقالات الجديدة: {len(new_articles)}")
-
-    for article in new_articles:
-        category = classify(article["title"], article["summary"])
-        sent = send_telegram_notification(article["title"], article["link"], category)
-
-        state["processed_links"].append(article["link"])
-
-        log.info(
-            f"مقال: '{article['title'][:60]}...' | التصنيف: {category} | "
-            f"الإشعار: {'أُرسل' if sent else 'فشل'}"
-        )
-
-    save_state(state)
-    log.info("انتهت دورة الفحص")
-
-
-if __name__ == "__main__":
-    main()
-    
+      - name: حفظ ملف الحالة (إن تغيّر)
+        run: |
+          git config user.name "football-news-bot"
+          git config user.email "actions@github.com"
+          git add processed_articles.json
+          git diff --quiet --cached || git commit -m "تحديث المقالات المعالجة [skip ci]"
+          git push
+          
