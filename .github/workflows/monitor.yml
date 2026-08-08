@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write            # مطلوب لحفظ ملف الحالة (processed_articles.json) داخل المستودع
 
+concurrency:
+  group: football-news-monitor
+  cancel-in-progress: false   # يستنى دوره بدل ما يتلغي، عشان منفوتش أي دورة فحص
+
 jobs:
   check-news:
     runs-on: ubuntu-latest
@@ -36,6 +40,9 @@ jobs:
           git config user.email "actions@github.com"
           git add processed_articles.json
           git diff --quiet --cached || git commit -m "تحديث المقالات المعالجة [skip ci]"
-          git pull --rebase origin main || true
-          git push
-          
+
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push && break
+            echo "محاولة $i فشلت، إعادة المحاولة بعد ثانيتين..."
+            sleep 2
+          done
