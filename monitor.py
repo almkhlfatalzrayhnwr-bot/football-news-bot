@@ -79,9 +79,17 @@ def fetch_new_articles(processed_links):
     new_articles = []
     processed_set = set(processed_links)
 
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; FootballNewsBot/1.0)"}
+
     for feed_url in RSS_FEEDS:
         try:
-            parsed = feedparser.parse(feed_url)
+            # نستخدم requests مع مهلة زمنية صريحة بدل تمرير الرابط مباشرة
+            # لـ feedparser، لأن feedparser.parse(url) لا يملك مهلة افتراضية
+            # وقد يعلّق التنفيذ لوقت طويل إذا لم يرد الخادم.
+            resp = requests.get(feed_url, headers=headers, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            parsed = feedparser.parse(resp.content)
+
             if parsed.bozo:
                 log.warning(f"تحذير عند قراءة {feed_url}: {parsed.bozo_exception}")
             for entry in parsed.entries:
@@ -90,6 +98,8 @@ def fetch_new_articles(processed_links):
                 summary = entry.get("summary", "")
                 if link and link not in processed_set:
                     new_articles.append({"link": link, "title": title, "summary": summary})
+        except requests.exceptions.RequestException as e:
+            log.error(f"فشل جلب {feed_url} (مهلة/اتصال): {e}")
         except Exception as e:
             log.error(f"فشل جلب {feed_url}: {e}")
 
@@ -166,3 +176,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                
