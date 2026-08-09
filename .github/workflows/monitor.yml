@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check-news:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: سحب المستودع
         uses: actions/checkout@v4
