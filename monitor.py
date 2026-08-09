@@ -21,8 +21,13 @@ import requests
 # ============================================================
 
 RSS_FEEDS = [
+    # مصادر عالمية (إنجليزية)
     "http://feeds.bbci.co.uk/sport/football/rss.xml",
     "https://www.skysports.com/rss/12040",
+    # مصادر عربية — فى الجول (FilGoal)
+    "https://www.filgoal.com/section/0/rss/%D9%85%D8%B5%D8%B1",       # آخر الأخبار
+    "https://www.filgoal.com/section/9/rss/%D8%A7%D9%84%D9%88%D8%B7%D9%86-%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A",  # الكرة العربية
+    "https://www.filgoal.com/section/3/rss/%D8%A3%D9%88%D8%B1%D9%88%D8%A8%D8%A7",  # الكرة الأوروبية
 ]
 
 STATE_FILE = "processed_articles.json"
@@ -129,7 +134,7 @@ def send_telegram_notification(title, link, category):
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    text = f"⚽ [{category}]\n{title}\n{link}"
+    text = f"⚽ التصنيف: {category}\n\n{title}\n\n{link}"
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -176,4 +181,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                
+    
