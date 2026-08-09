@@ -24,10 +24,12 @@ RSS_FEEDS = [
     # مصادر عالمية (إنجليزية)
     "http://feeds.bbci.co.uk/sport/football/rss.xml",
     "https://www.skysports.com/rss/12040",
-    # مصادر عربية — فى الجول (FilGoal)
-    "https://www.filgoal.com/section/0/rss/%D9%85%D8%B5%D8%B1",       # آخر الأخبار
-    "https://www.filgoal.com/section/9/rss/%D8%A7%D9%84%D9%88%D8%B7%D9%86-%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A",  # الكرة العربية
-    "https://www.filgoal.com/section/3/rss/%D8%A3%D9%88%D8%B1%D9%88%D8%A8%D8%A7",  # الكرة الأوروبية
+    # مصادر عربية — عبر Google News RSS (يجمع من عشرات المواقع العربية:
+    # كووورة، يلاكورة، الجزيرة، إلخ). أوثق من الاعتماد على موقع عربي واحد
+    # لأن مواقع مثل FilGoal تحظر الطلبات الآلية (403 Forbidden) بينما
+    # Google News لا يحظرها.
+    "https://news.google.com/rss/search?q=%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85&hl=ar&gl=EG&ceid=EG:ar",
+    "https://news.google.com/rss/search?q=%D9%85%D9%86%D8%AA%D8%AE%D8%A8%D8%A7%D8%AA%20%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9%20%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85&hl=ar&gl=EG&ceid=EG:ar",
 ]
 
 STATE_FILE = "processed_articles.json"
