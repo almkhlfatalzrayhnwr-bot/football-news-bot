@@ -38,6 +38,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 3
+MAX_ARTICLES_PER_RUN = 12  # يمنع تجاوز حد سرعة Telegram ومهلة الـ workflow
 
 # قواعد التصنيف بالكلمات المفتاحية (يمكن التوسع فيها بسهولة)
 CATEGORY_RULES = {
@@ -143,6 +144,12 @@ def send_telegram_notification(title, link, category):
                 json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
                 timeout=REQUEST_TIMEOUT,
             )
+            if resp.status_code == 429:
+                # تجاوزنا حد سرعة Telegram — نحترم القيمة اللي بيطلبها هو بالظبط
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+                log.warning(f"Telegram طلب الانتظار {retry_after} ثانية (rate limit)")
+                time.sleep(retry_after + 1)
+                continue
             resp.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
@@ -164,7 +171,17 @@ def main():
     new_articles = fetch_new_articles(state["processed_links"])
     log.info(f"عدد المقالات الجديدة: {len(new_articles)}")
 
-    for article in new_articles:
+    # نحد عدد الأخبار المُرسلة في التشغيلة الواحدة، عشان ما نضربش حد سرعة
+    # Telegram ولا نتخطى مهلة الـ workflow. أي أخبار زيادة عن الحد هتتبعت
+    # تلقائياً في التشغيلة الجاية (بعد 5 دقايق) لأنها هتفضل غير معالَجة.
+    articles_to_send = new_articles[:MAX_ARTICLES_PER_RUN]
+    if len(new_articles) > MAX_ARTICLES_PER_RUN:
+        log.info(
+            f"تم تقييد الإرسال إلى {MAX_ARTICLES_PER_RUN} مقال في هذه الدورة؛ "
+            f"الباقي ({len(new_articles) - MAX_ARTICLES_PER_RUN}) سيُرسل في الدورات القادمة"
+        )
+
+    for i, article in enumerate(articles_to_send):
         category = classify(article["title"], article["summary"])
         sent = send_telegram_notification(article["title"], article["link"], category)
 
@@ -174,6 +191,11 @@ def main():
             f"مقال: '{article['title'][:60]}...' | التصنيف: {category} | "
             f"الإشعار: {'أُرسل' if sent else 'فشل'}"
         )
+
+        # تهدئة بسيطة بين كل رسالة والتانية لاحترام حد سرعة Telegram
+        # (Telegram يسمح تقريبًا برسالة واحدة كل ثانية لنفس المحادثة)
+        if i < len(articles_to_send) - 1:
+            time.sleep(1.2)
 
     save_state(state)
     log.info("انتهت دورة الفحص")
