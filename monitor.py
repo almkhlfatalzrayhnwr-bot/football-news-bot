@@ -33,8 +33,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# نموذج Flash: مجاني بالكامل، وحده أعلى بكثير من احتياجنا (~1500 طلب/يوم)
-GEMINI_MODEL = "gemini-2.5-flash"
+# alias ثابت بدل رقم نسخة محدد - يمنع مشاكل توقف موديل معين فجأة
+GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
