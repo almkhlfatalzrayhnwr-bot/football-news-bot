@@ -17,10 +17,6 @@ import logging
 import feedparser
 import requests
 
-# ============================================================
-# الإعدادات
-# ============================================================
-
 RSS_FEEDS = [
     "https://news.google.com/rss/search?q=%D8%A3%D8%AE%D8%A8%D8%A7%D8%B1%20%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85%20when:1d&hl=ar&gl=EG&ceid=EG:ar",
     "https://news.google.com/rss/search?q=%D8%A7%D9%84%D9%85%D9%86%D8%AA%D8%AE%D8%A8%D8%A7%D8%AA%20%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9%20%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85%20when:1d&hl=ar&gl=EG&ceid=EG:ar",
@@ -33,7 +29,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# alias ثابت بدل رقم نسخة محدد - يمنع مشاكل توقف موديل معين فجأة
+# alias ثابت بدل رقم نسخة محدد - يمنع مشاكل توقف موديل معين فجأة، مجاني بالكامل
 GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -42,10 +38,9 @@ GEMINI_URL = (
 
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
-MAX_ARTICLES_PER_RUN = 12  # يمنع تجاوز حد سرعة Telegram ومهلة الـ workflow
-TELEGRAM_MAX_LEN = 4000    # حد تليجرام الفعلي 4096، نسيب هامش أمان
+MAX_ARTICLES_PER_RUN = 12
+TELEGRAM_MAX_LEN = 4000
 
-# قواعد التصنيف بالكلمات المفتاحية (يمكن التوسع فيها بسهولة)
 CATEGORY_RULES = {
     "نتيجة": ["فاز", "خسر", "تعادل", "هدف", "نتيجة", "beat", "win", "draw", "score", "result"],
     "انتقالات": ["انتقال", "صفقة", "تعاقد", "يوقع", "ينتقل", "transfer", "signing", "sign for", "deal"],
@@ -113,11 +108,23 @@ def classify(title, summary):
     return DEFAULT_CATEGORY
 
 
+def strip_markdown(text):
+    """يشيل رموز Markdown الشائعة اللي أحياناً بيرجعها Gemini رغم التعليمات."""
+    for ch in ["**", "__", "##", "###", "`"]:
+        text = text.replace(ch, "")
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("* ") or stripped.startswith("- "):
+            stripped = stripped[2:]
+        lines.append(stripped if stripped != line.lstrip() else line)
+    return "\n".join(lines).replace("*", "").strip()
+
+
 def generate_article(title, summary, category):
     """
     يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي.
-    عند أي فشل (مفتاح غير مضبوط، خطأ شبكة، حد استخدام)، يرجع نسخة احتياطية
-    بسيطة من العنوان + الملخص عشان الأخبار متتوقفش عن الوصول للقناة.
+    عند أي فشل، يرجع نسخة احتياطية بسيطة من العنوان + الملخص.
     """
     fallback_text = f"{title}\n\n{summary}".strip()
 
@@ -126,20 +133,26 @@ def generate_article(title, summary, category):
         return fallback_text
 
     prompt = (
-        "أنت محرر أخبار رياضية محترف. اكتب مقالاً إخبارياً قصيراً بالعربية الفصحى "
-        "(بين 100 و180 كلمة) عن الخبر التالي، بأسلوب صحفي واضح ومباشر بدون مبالغة "
-        "أو معلومات غير مؤكدة، وابدأ بعنوان جذاب في سطر منفصل ثم المقال:\n\n"
+        "أنت محرر أخبار رياضية محترف. اكتب مقالاً إخبارياً كاملاً بالعربية الفصحى، "
+        "لا يقل عن 120 كلمة ولا يزيد عن 200 كلمة، عن الخبر التالي بناءً على العنوان "
+        "والملخص المتاحين. وسّع في الصياغة الصحفية (سياق، أهمية الخبر، تفاصيل منطقية "
+        "مبنية على المعطاة) بدون اختراع أرقام أو تصريحات أو تفاصيل غير موجودة في المصدر.\n\n"
         f"التصنيف: {category}\n"
         f"العنوان الأصلي: {title}\n"
         f"الملخص: {summary}\n\n"
-        "اكتب المقال مباشرة بدون مقدمات مثل 'بالتأكيد' أو 'إليك المقال'."
+        "قواعد صارمة للمخرجات:\n"
+        "- ابدأ بعنوان جذاب في سطر منفصل، ثم سطر فارغ، ثم نص المقال كاملاً.\n"
+        "- ممنوع استخدام أي رموز تنسيق Markdown نهائياً (لا نجوم **، لا شرطات -، لا عناوين #).\n"
+        "- اكتب نص عادي فقط بدون أي رموز زخرفية.\n"
+        "- لا تكتب أي مقدمات مثل 'بالتأكيد' أو 'إليك المقال' أو 'هذا مقال عن'.\n"
+        "- لا تقتطع الجملة الأولى؛ ابدأ العنوان من أول كلمة كاملة."
     )
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.6,
-            "maxOutputTokens": 500,
+            "maxOutputTokens": 1024,
         },
     }
 
@@ -167,7 +180,7 @@ def generate_article(title, summary, category):
             article_text = "".join(p.get("text", "") for p in parts).strip()
 
             if article_text:
-                return article_text[:TELEGRAM_MAX_LEN]
+                return strip_markdown(article_text)[:TELEGRAM_MAX_LEN]
 
         except requests.exceptions.RequestException as e:
             log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في الاتصال بـ Gemini: {e}")
@@ -234,12 +247,10 @@ def main():
     for i, article in enumerate(articles_to_send):
         category = classify(article["title"], article["summary"])
 
-        # توليد المقال الكامل بالعربي عبر Gemini
         full_article = generate_article(article["title"], article["summary"], category)
         channel_text = f"⚽ {category}\n\n{full_article}\n\n🔗 {article['link']}"
         channel_text = channel_text[:TELEGRAM_MAX_LEN]
 
-        # نص مختصر للشات الشخصي (للمتابعة والتشخيص السريع)
         personal_text = f"⚽ التصنيف: {category}\n\n{article['title']}\n\n{article['link']}"
 
         sent = send_telegram_notification(personal_text, TELEGRAM_CHAT_ID)
