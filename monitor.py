@@ -4,7 +4,7 @@
 ======================================================================
 المصدر: RSS Feeds (مجانية)
 التصنيف: كلمات مفتاحية (بدون AI، مجاني وحتمي 100%)
-الإشعار: Telegram Bot API (مجاني)
+الإشعار: Telegram Bot API (مجاني) — يُرسل للشات الشخصي وللقناة معاً
 التخزين: ملف JSON داخل المستودع نفسه (يُحدَّث ويُحفظ عبر git commit تلقائي)
 """
 
@@ -35,6 +35,7 @@ STATE_FILE = "processed_articles.json"
 # التوكن والـ chat id يُقرآن من متغيرات البيئة (GitHub Secrets) وليس من الكود مباشرة
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 3
@@ -129,9 +130,10 @@ def classify(title, summary):
 # إشعار Telegram
 # ============================================================
 
-def send_telegram_notification(title, link, category):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("لم يتم ضبط TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — تخطي الإشعار")
+def send_telegram_notification(title, link, category, chat_id):
+    """يرسل رسالة تليجرام لأي chat_id (شات شخصي أو قناة)."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        log.warning("لم يتم ضبط TELEGRAM_BOT_TOKEN أو chat_id — تخطي الإشعار")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -141,7 +143,7 @@ def send_telegram_notification(title, link, category):
         try:
             resp = requests.post(
                 url,
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+                json={"chat_id": chat_id, "text": text},
                 timeout=REQUEST_TIMEOUT,
             )
             if resp.status_code == 429:
@@ -156,7 +158,7 @@ def send_telegram_notification(title, link, category):
             log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال إشعار Telegram: {e}")
             time.sleep(attempt * 2)
 
-    log.error(f"فشل إرسال الإشعار نهائياً للمقال: {title}")
+    log.error(f"فشل إرسال الإشعار نهائياً للمقال: {title} (chat_id={chat_id})")
     return False
 
 
@@ -183,7 +185,13 @@ def main():
 
     for i, article in enumerate(articles_to_send):
         category = classify(article["title"], article["summary"])
-        sent = send_telegram_notification(article["title"], article["link"], category)
+
+        # إرسال للشات الشخصي (للمتابعة والتجربة)
+        sent = send_telegram_notification(article["title"], article["link"], category, TELEGRAM_CHAT_ID)
+
+        # إرسال لقناة تليجرام العامة (المنتج النهائي للجمهور)
+        if TELEGRAM_CHANNEL_ID:
+            send_telegram_notification(article["title"], article["link"], category, TELEGRAM_CHANNEL_ID)
 
         state["processed_links"].append(article["link"])
 
