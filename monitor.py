@@ -4,7 +4,8 @@
 ======================================================================
 المصدر: RSS Feeds (مجانية)
 التصنيف: كلمات مفتاحية (بدون AI، مجاني وحتمي 100%)
-الإشعار: Telegram Bot API (مجاني) — يُرسل للشات الشخصي وللقناة معاً
+توليد المقالات: Google Gemini API (مجاني - نموذج Flash)
+الإشعار: Telegram Bot API (مجاني) — مقال كامل للقناة + إشعار مختصر للشات الشخصي
 التخزين: ملف JSON داخل المستودع نفسه (يُحدَّث ويُحفظ عبر git commit تلقائي)
 """
 
@@ -30,11 +31,21 @@ STATE_FILE = "processed_articles.json"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-REQUEST_TIMEOUT = 15
+# نموذج Flash: مجاني بالكامل، وحده أعلى بكثير من احتياجنا (~1500 طلب/يوم)
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+)
+
+REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
-MAX_ARTICLES_PER_RUN = 12
+MAX_ARTICLES_PER_RUN = 12  # يمنع تجاوز حد سرعة Telegram ومهلة الـ workflow
+TELEGRAM_MAX_LEN = 4000    # حد تليجرام الفعلي 4096، نسيب هامش أمان
 
+# قواعد التصنيف بالكلمات المفتاحية (يمكن التوسع فيها بسهولة)
 CATEGORY_RULES = {
     "نتيجة": ["فاز", "خسر", "تعادل", "هدف", "نتيجة", "beat", "win", "draw", "score", "result"],
     "انتقالات": ["انتقال", "صفقة", "تعاقد", "يوقع", "ينتقل", "transfer", "signing", "sign for", "deal"],
@@ -102,14 +113,79 @@ def classify(title, summary):
     return DEFAULT_CATEGORY
 
 
-def send_telegram_notification(title, link, category, chat_id):
-    """يرسل رسالة تليجرام لأي chat_id (شات شخصي أو قناة)."""
+def generate_article(title, summary, category):
+    """
+    يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي.
+    عند أي فشل (مفتاح غير مضبوط، خطأ شبكة، حد استخدام)، يرجع نسخة احتياطية
+    بسيطة من العنوان + الملخص عشان الأخبار متتوقفش عن الوصول للقناة.
+    """
+    fallback_text = f"{title}\n\n{summary}".strip()
+
+    if not GEMINI_API_KEY:
+        log.warning("لم يتم ضبط GEMINI_API_KEY — سيُستخدم نص مختصر بدل المقال الكامل")
+        return fallback_text
+
+    prompt = (
+        "أنت محرر أخبار رياضية محترف. اكتب مقالاً إخبارياً قصيراً بالعربية الفصحى "
+        "(بين 100 و180 كلمة) عن الخبر التالي، بأسلوب صحفي واضح ومباشر بدون مبالغة "
+        "أو معلومات غير مؤكدة، وابدأ بعنوان جذاب في سطر منفصل ثم المقال:\n\n"
+        f"التصنيف: {category}\n"
+        f"العنوان الأصلي: {title}\n"
+        f"الملخص: {summary}\n\n"
+        "اكتب المقال مباشرة بدون مقدمات مثل 'بالتأكيد' أو 'إليك المقال'."
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.6,
+            "maxOutputTokens": 500,
+        },
+    }
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.post(GEMINI_URL, json=payload, timeout=REQUEST_TIMEOUT)
+
+            if resp.status_code == 429:
+                log.warning(f"Gemini: تجاوز حد الاستخدام (429)، محاولة {attempt}/{MAX_RETRIES}")
+                time.sleep(attempt * 5)
+                continue
+
+            if not resp.ok:
+                log.warning(f"Gemini فشل (محاولة {attempt}/{MAX_RETRIES}): {resp.status_code} - {resp.text[:300]}")
+                time.sleep(attempt * 2)
+                continue
+
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                log.warning(f"Gemini رجع بدون نتائج: {data}")
+                continue
+
+            parts = candidates[0].get("content", {}).get("parts", [])
+            article_text = "".join(p.get("text", "") for p in parts).strip()
+
+            if article_text:
+                return article_text[:TELEGRAM_MAX_LEN]
+
+        except requests.exceptions.RequestException as e:
+            log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في الاتصال بـ Gemini: {e}")
+            time.sleep(attempt * 2)
+        except (ValueError, KeyError) as e:
+            log.warning(f"تعذّر تحليل رد Gemini: {e}")
+
+    log.error(f"فشل توليد المقال نهائياً عبر Gemini، استخدام النسخة المختصرة: {title}")
+    return fallback_text
+
+
+def send_telegram_notification(text, chat_id):
+    """يرسل نص جاهز لأي chat_id (شات شخصي أو قناة)."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
         log.warning("لم يتم ضبط TELEGRAM_BOT_TOKEN أو chat_id — تخطي الإشعار")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    text = f"⚽ التصنيف: {category}\n\n{title}\n\n{link}"
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -125,7 +201,6 @@ def send_telegram_notification(title, link, category, chat_id):
                 continue
 
             if not resp.ok:
-                # نطبع نص رسالة الخطأ الحقيقية اللي بيرجعها تليجرام عشان نعرف السبب الفعلي
                 log.warning(
                     f"محاولة {attempt}/{MAX_RETRIES} فشلت (chat_id={chat_id}): "
                     f"{resp.status_code} - {resp.text}"
@@ -138,7 +213,7 @@ def send_telegram_notification(title, link, category, chat_id):
             log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال إشعار Telegram: {e}")
             time.sleep(attempt * 2)
 
-    log.error(f"فشل إرسال الإشعار نهائياً للمقال: {title} (chat_id={chat_id})")
+    log.error(f"فشل إرسال الإشعار نهائياً (chat_id={chat_id})")
     return False
 
 
@@ -159,10 +234,18 @@ def main():
     for i, article in enumerate(articles_to_send):
         category = classify(article["title"], article["summary"])
 
-        sent = send_telegram_notification(article["title"], article["link"], category, TELEGRAM_CHAT_ID)
+        # توليد المقال الكامل بالعربي عبر Gemini
+        full_article = generate_article(article["title"], article["summary"], category)
+        channel_text = f"⚽ {category}\n\n{full_article}\n\n🔗 {article['link']}"
+        channel_text = channel_text[:TELEGRAM_MAX_LEN]
+
+        # نص مختصر للشات الشخصي (للمتابعة والتشخيص السريع)
+        personal_text = f"⚽ التصنيف: {category}\n\n{article['title']}\n\n{article['link']}"
+
+        sent = send_telegram_notification(personal_text, TELEGRAM_CHAT_ID)
 
         if TELEGRAM_CHANNEL_ID:
-            send_telegram_notification(article["title"], article["link"], category, TELEGRAM_CHANNEL_ID)
+            send_telegram_notification(channel_text, TELEGRAM_CHANNEL_ID)
 
         state["processed_links"].append(article["link"])
 
