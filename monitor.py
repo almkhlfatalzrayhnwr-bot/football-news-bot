@@ -21,27 +21,20 @@ import requests
 # ============================================================
 
 RSS_FEEDS = [
-    # مصادر عربية بالكامل عبر Google News RSS (يجمع من عشرات المواقع:
-    # كووورة، يلاكورة، الجزيرة، أون تايم سبورت، إلخ). أوثق من الاعتماد
-    # على موقع عربي واحد لأن مواقع مثل FilGoal تحظر الطلبات الآلية
-    # (403 Forbidden) بينما Google News لا يحظرها.
-    # "when:1d" يقصر النتائج على آخر 24 ساعة فقط (يمنع ظهور أخبار قديمة).
     "https://news.google.com/rss/search?q=%D8%A3%D8%AE%D8%A8%D8%A7%D8%B1%20%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85%20when:1d&hl=ar&gl=EG&ceid=EG:ar",
     "https://news.google.com/rss/search?q=%D8%A7%D9%84%D9%85%D9%86%D8%AA%D8%AE%D8%A8%D8%A7%D8%AA%20%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9%20%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85%20when:1d&hl=ar&gl=EG&ceid=EG:ar",
 ]
 
 STATE_FILE = "processed_articles.json"
 
-# التوكن والـ chat id يُقرآن من متغيرات البيئة (GitHub Secrets) وليس من الكود مباشرة
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 3
-MAX_ARTICLES_PER_RUN = 12  # يمنع تجاوز حد سرعة Telegram ومهلة الـ workflow
+MAX_ARTICLES_PER_RUN = 12
 
-# قواعد التصنيف بالكلمات المفتاحية (يمكن التوسع فيها بسهولة)
 CATEGORY_RULES = {
     "نتيجة": ["فاز", "خسر", "تعادل", "هدف", "نتيجة", "beat", "win", "draw", "score", "result"],
     "انتقالات": ["انتقال", "صفقة", "تعاقد", "يوقع", "ينتقل", "transfer", "signing", "sign for", "deal"],
@@ -57,10 +50,6 @@ logging.basicConfig(
 log = logging.getLogger("football_monitor")
 
 
-# ============================================================
-# التخزين (state) — ملف JSON
-# ============================================================
-
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -72,27 +61,18 @@ def load_state():
 
 
 def save_state(state):
-    # نحتفظ فقط بآخر 500 رابط لمنع نمو الملف بلا حدود
     state["processed_links"] = state["processed_links"][-500:]
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-# ============================================================
-# جلب المقالات الجديدة
-# ============================================================
-
 def fetch_new_articles(processed_links):
     new_articles = []
     processed_set = set(processed_links)
-
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FootballNewsBot/1.0)"}
 
     for feed_url in RSS_FEEDS:
         try:
-            # نستخدم requests مع مهلة زمنية صريحة بدل تمرير الرابط مباشرة
-            # لـ feedparser، لأن feedparser.parse(url) لا يملك مهلة افتراضية
-            # وقد يعلّق التنفيذ لوقت طويل إذا لم يرد الخادم.
             resp = requests.get(feed_url, headers=headers, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
             parsed = feedparser.parse(resp.content)
@@ -113,10 +93,6 @@ def fetch_new_articles(processed_links):
     return new_articles
 
 
-# ============================================================
-# التصنيف بالكلمات المفتاحية (بدون AI — حتمي وسريع ومجاني)
-# ============================================================
-
 def classify(title, summary):
     text = f"{title} {summary}".lower()
     for category, keywords in CATEGORY_RULES.items():
@@ -125,10 +101,6 @@ def classify(title, summary):
                 return category
     return DEFAULT_CATEGORY
 
-
-# ============================================================
-# إشعار Telegram
-# ============================================================
 
 def send_telegram_notification(title, link, category, chat_id):
     """يرسل رسالة تليجرام لأي chat_id (شات شخصي أو قناة)."""
@@ -147,12 +119,20 @@ def send_telegram_notification(title, link, category, chat_id):
                 timeout=REQUEST_TIMEOUT,
             )
             if resp.status_code == 429:
-                # تجاوزنا حد سرعة Telegram — نحترم القيمة اللي بيطلبها هو بالظبط
                 retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
                 log.warning(f"Telegram طلب الانتظار {retry_after} ثانية (rate limit)")
                 time.sleep(retry_after + 1)
                 continue
-            resp.raise_for_status()
+
+            if not resp.ok:
+                # نطبع نص رسالة الخطأ الحقيقية اللي بيرجعها تليجرام عشان نعرف السبب الفعلي
+                log.warning(
+                    f"محاولة {attempt}/{MAX_RETRIES} فشلت (chat_id={chat_id}): "
+                    f"{resp.status_code} - {resp.text}"
+                )
+                time.sleep(attempt * 2)
+                continue
+
             return True
         except requests.exceptions.RequestException as e:
             log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال إشعار Telegram: {e}")
@@ -162,10 +142,6 @@ def send_telegram_notification(title, link, category, chat_id):
     return False
 
 
-# ============================================================
-# التشغيل الرئيسي
-# ============================================================
-
 def main():
     log.info("بدء دورة فحص جديدة")
     state = load_state()
@@ -173,9 +149,6 @@ def main():
     new_articles = fetch_new_articles(state["processed_links"])
     log.info(f"عدد المقالات الجديدة: {len(new_articles)}")
 
-    # نحد عدد الأخبار المُرسلة في التشغيلة الواحدة، عشان ما نضربش حد سرعة
-    # Telegram ولا نتخطى مهلة الـ workflow. أي أخبار زيادة عن الحد هتتبعت
-    # تلقائياً في التشغيلة الجاية (بعد 5 دقايق) لأنها هتفضل غير معالَجة.
     articles_to_send = new_articles[:MAX_ARTICLES_PER_RUN]
     if len(new_articles) > MAX_ARTICLES_PER_RUN:
         log.info(
@@ -186,10 +159,8 @@ def main():
     for i, article in enumerate(articles_to_send):
         category = classify(article["title"], article["summary"])
 
-        # إرسال للشات الشخصي (للمتابعة والتجربة)
         sent = send_telegram_notification(article["title"], article["link"], category, TELEGRAM_CHAT_ID)
 
-        # إرسال لقناة تليجرام العامة (المنتج النهائي للجمهور)
         if TELEGRAM_CHANNEL_ID:
             send_telegram_notification(article["title"], article["link"], category, TELEGRAM_CHANNEL_ID)
 
@@ -200,8 +171,6 @@ def main():
             f"الإشعار: {'أُرسل' if sent else 'فشل'}"
         )
 
-        # تهدئة بسيطة بين كل رسالة والتانية لاحترام حد سرعة Telegram
-        # (Telegram يسمح تقريبًا برسالة واحدة كل ثانية لنفس المحادثة)
         if i < len(articles_to_send) - 1:
             time.sleep(1.2)
 
@@ -211,4 +180,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
