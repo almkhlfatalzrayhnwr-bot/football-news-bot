@@ -29,7 +29,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# alias ثابت بدل رقم نسخة محدد - يمنع مشاكل توقف موديل معين فجأة، مجاني بالكامل
 GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -152,7 +151,8 @@ def generate_article(title, summary, category):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.6,
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": 800,
+            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
 
@@ -178,6 +178,11 @@ def generate_article(title, summary, category):
 
             parts = candidates[0].get("content", {}).get("parts", [])
             article_text = "".join(p.get("text", "") for p in parts).strip()
+            finish_reason = candidates[0].get("finishReason", "")
+
+            if finish_reason == "MAX_TOKENS" and len(article_text) < 200:
+                log.warning(f"Gemini قطع الرد قبل اكتماله (MAX_TOKENS)، محاولة {attempt}/{MAX_RETRIES}")
+                continue
 
             if article_text:
                 return strip_markdown(article_text)[:TELEGRAM_MAX_LEN]
