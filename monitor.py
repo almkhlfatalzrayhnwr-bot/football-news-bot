@@ -107,6 +107,14 @@ def classify(title, summary):
     return DEFAULT_CATEGORY
 
 
+def strip_html(text):
+    """يشيل أكواد HTML الخام اللي أحياناً بتوصل جوه حقل summary من Google News RSS."""
+    import re
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def strip_markdown(text):
     """يشيل رموز Markdown الشائعة اللي أحياناً بيرجعها Gemini رغم التعليمات."""
     for ch in ["**", "__", "##", "###", "`"]:
@@ -125,6 +133,7 @@ def generate_article(title, summary, category):
     يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي.
     عند أي فشل، يرجع نسخة احتياطية بسيطة من العنوان + الملخص.
     """
+    summary = strip_html(summary)
     fallback_text = f"{title}\n\n{summary}".strip()
 
     if not GEMINI_API_KEY:
@@ -151,8 +160,8 @@ def generate_article(title, summary, category):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.6,
-            "maxOutputTokens": 800,
-            "thinkingConfig": {"thinkingBudget": 0},
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {"thinkingLevel": "low"},
         },
     }
 
