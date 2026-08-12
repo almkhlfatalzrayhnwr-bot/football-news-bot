@@ -37,7 +37,7 @@ GEMINI_URL = (
 
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
-MAX_ARTICLES_PER_RUN = 6
+MAX_ARTICLES_PER_RUN = 4
 TELEGRAM_MAX_LEN = 4000
 
 CATEGORY_RULES = {
@@ -165,7 +165,7 @@ def strip_markdown(text):
     return "\n".join(lines).replace("*", "").strip()
 
 
-GEMINI_MIN_INTERVAL = 7  # ثانية بين كل استدعاء وآخر، عشان نفضل تحت حد 10 طلبات/دقيقة بهامش أمان
+GEMINI_MIN_INTERVAL = 12  # ثانية بين كل استدعاء وآخر، هامش أمان أكبر تحت حد 10 طلبات/دقيقة
 _last_gemini_call_time = [0]
 
 
@@ -183,7 +183,6 @@ def generate_article(title, summary, category):
     """
     summary = strip_html(summary)
 
-    # ملخصات Google News غالباً بتكرر العنوان نفسه + اسم المصدر، فنتفادى التكرار الواضح
     title_core = title.split(" - ")[0].strip()
     if summary.strip().startswith(title_core) or title_core in summary[:len(title_core) + 20]:
         fallback_text = title.strip()
@@ -261,7 +260,7 @@ def generate_article(title, summary, category):
     return fallback_text
 
 
-TELEGRAM_CAPTION_MAX_LEN = 1000  # حد caption الفعلي في تليجرام 1024، نسيب هامش أمان
+TELEGRAM_CAPTION_MAX_LEN = 1000
 
 
 def send_telegram_photo(image_url, caption, chat_id, parse_mode=None):
