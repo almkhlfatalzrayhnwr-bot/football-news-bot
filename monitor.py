@@ -5,7 +5,7 @@
 المصدر: RSS Feeds (مجانية)
 التصنيف: كلمات مفتاحية (بدون AI، مجاني وحتمي 100%)
 توليد المقالات: Google Gemini API (مجاني - نموذج Flash)
-الإشعار: Telegram Bot API (مجاني) — مقال كامل للقناة + إشعار مختصر للشات الشخصي
+الإشعار: Telegram Bot API (مجاني) — صورة + مقال كامل للقناة، إشعار مختصر للشات الشخصي
 التخزين: ملف JSON داخل المستودع نفسه (يُحدَّث ويُحفظ عبر git commit تلقائي)
 """
 
@@ -105,6 +105,38 @@ def classify(title, summary):
             if kw.lower() in text:
                 return category
     return DEFAULT_CATEGORY
+
+
+def fetch_article_image(link):
+    """يفتح صفحة المقال الأصلية ويستخرج صورته الرئيسية من og:image (أو twitter:image احتياطياً)."""
+    import re
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; FootballNewsBot/1.0)"}
+        resp = requests.get(link, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        if not resp.ok:
+            return None
+
+        html = resp.text[:200000]
+
+        for prop in ["og:image", "twitter:image"]:
+            match = re.search(
+                rf'<meta[^>]+property=["\']{prop}["\'][^>]+content=["\']([^"\']+)["\']',
+                html, re.IGNORECASE,
+            )
+            if not match:
+                match = re.search(
+                    rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{prop}["\']',
+                    html, re.IGNORECASE,
+                )
+            if match:
+                image_url = match.group(1)
+                if image_url.startswith("http"):
+                    return image_url
+        return None
+    except requests.exceptions.RequestException:
+        return None
+    except Exception:
+        return None
 
 
 def escape_html(text):
@@ -211,6 +243,44 @@ def generate_article(title, summary, category):
     return fallback_text
 
 
+TELEGRAM_CAPTION_MAX_LEN = 1000  # حد caption الفعلي في تليجرام 1024، نسيب هامش أمان
+
+
+def send_telegram_photo(image_url, caption, chat_id, parse_mode=None):
+    """يرسل صورة مع نص مرفق (caption) لأي chat_id. يرجع True/False حسب النجاح."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    payload = {"chat_id": chat_id, "photo": image_url, "caption": caption}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 429:
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+                log.warning(f"Telegram طلب الانتظار {retry_after} ثانية (rate limit)")
+                time.sleep(retry_after + 1)
+                continue
+
+            if not resp.ok:
+                log.warning(
+                    f"إرسال الصورة فشل (محاولة {attempt}/{MAX_RETRIES}, chat_id={chat_id}): "
+                    f"{resp.status_code} - {resp.text}"
+                )
+                time.sleep(attempt * 2)
+                continue
+
+            return True
+        except requests.exceptions.RequestException as e:
+            log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال الصورة: {e}")
+            time.sleep(attempt * 2)
+
+    return False
+
+
 def send_telegram_notification(text, chat_id, parse_mode=None):
     """يرسل نص جاهز لأي chat_id (شات شخصي أو قناة). parse_mode='HTML' لدعم الروابط القصيرة."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
@@ -283,7 +353,21 @@ def main():
         sent = send_telegram_notification(personal_text, TELEGRAM_CHAT_ID)
 
         if TELEGRAM_CHANNEL_ID:
-            send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
+            image_url = fetch_article_image(article["link"])
+            link_html = f'<a href="{article["link"]}">🔗 اقرأ المزيد</a>'
+
+            if image_url:
+                caption_html = f"⚽ {escape_html(category)}\n\n{escape_html(full_article)}\n\n{link_html}"
+                if len(caption_html) > TELEGRAM_CAPTION_MAX_LEN:
+                    short_caption = f"⚽ {escape_html(category)}\n\n{escape_html(full_article)}"
+                    short_caption = short_caption[:TELEGRAM_CAPTION_MAX_LEN - len(link_html) - 5]
+                    caption_html = f"{short_caption}...\n\n{link_html}"
+
+                photo_sent = send_telegram_photo(image_url, caption_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
+                if not photo_sent:
+                    send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
+            else:
+                send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
 
         state["processed_links"].append(article["link"])
 
