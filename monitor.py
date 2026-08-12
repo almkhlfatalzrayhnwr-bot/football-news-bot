@@ -5,7 +5,7 @@
 المصدر: RSS Feeds (مجانية)
 التصنيف: كلمات مفتاحية (بدون AI، مجاني وحتمي 100%)
 توليد المقالات: Google Gemini API (مجاني - نموذج Flash)
-الإشعار: Telegram Bot API (مجاني) — صورة + مقال كامل للقناة، إشعار مختصر للشات الشخصي
+الإشعار: Telegram Bot API (مجاني) — مقال كامل للقناة + إشعار مختصر للشات الشخصي
 التخزين: ملف JSON داخل المستودع نفسه (يُحدَّث ويُحفظ عبر git commit تلقائي)
 """
 
@@ -16,10 +16,6 @@ import time
 import logging
 import feedparser
 import requests
-
-# ============================================================
-# الإعدادات
-# ============================================================
 
 RSS_FEEDS = [
     "https://news.google.com/rss/search?q=%D8%A3%D8%AE%D8%A8%D8%A7%D8%B1%20%D9%83%D8%B1%D8%A9%20%D8%A7%D9%84%D9%82%D8%AF%D9%85%20when:1d&hl=ar&gl=EG&ceid=EG:ar",
@@ -43,7 +39,6 @@ REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 MAX_ARTICLES_PER_RUN = 12
 TELEGRAM_MAX_LEN = 4000
-TELEGRAM_CAPTION_MAX_LEN = 1000
 
 CATEGORY_RULES = {
     "نتيجة": ["فاز", "خسر", "تعادل", "هدف", "نتيجة", "beat", "win", "draw", "score", "result"],
@@ -112,38 +107,6 @@ def classify(title, summary):
     return DEFAULT_CATEGORY
 
 
-def fetch_article_image(link):
-    """يفتح صفحة المقال الأصلية ويستخرج صورته الرئيسية من og:image (أو twitter:image احتياطياً)."""
-    import re
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; FootballNewsBot/1.0)"}
-        resp = requests.get(link, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-        if not resp.ok:
-            return None
-
-        html = resp.text[:200000]
-
-        for prop in ["og:image", "twitter:image"]:
-            match = re.search(
-                rf'<meta[^>]+property=["\']{prop}["\'][^>]+content=["\']([^"\']+)["\']',
-                html, re.IGNORECASE,
-            )
-            if not match:
-                match = re.search(
-                    rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{prop}["\']',
-                    html, re.IGNORECASE,
-                )
-            if match:
-                image_url = match.group(1)
-                if image_url.startswith("http"):
-                    return image_url
-        return None
-    except requests.exceptions.RequestException:
-        return None
-    except Exception:
-        return None
-
-
 def strip_html(text):
     """يشيل أكواد HTML الخام اللي أحياناً بتوصل جوه حقل summary من Google News RSS."""
     import re
@@ -166,7 +129,10 @@ def strip_markdown(text):
 
 
 def generate_article(title, summary, category):
-    """يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي."""
+    """
+    يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي.
+    عند أي فشل، يرجع نسخة احتياطية بسيطة من العنوان + الملخص.
+    """
     summary = strip_html(summary)
     fallback_text = f"{title}\n\n{summary}".strip()
 
@@ -240,42 +206,6 @@ def generate_article(title, summary, category):
     return fallback_text
 
 
-def send_telegram_photo(image_url, caption, chat_id):
-    """يرسل صورة مع نص مرفق (caption) لأي chat_id."""
-    if not TELEGRAM_BOT_TOKEN or not chat_id:
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = requests.post(
-                url,
-                json={"chat_id": chat_id, "photo": image_url, "caption": caption},
-                timeout=REQUEST_TIMEOUT,
-            )
-            if resp.status_code == 429:
-                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
-                log.warning(f"Telegram طلب الانتظار {retry_after} ثانية (rate limit)")
-                time.sleep(retry_after + 1)
-                continue
-
-            if not resp.ok:
-                log.warning(
-                    f"إرسال الصورة فشل (محاولة {attempt}/{MAX_RETRIES}, chat_id={chat_id}): "
-                    f"{resp.status_code} - {resp.text}"
-                )
-                time.sleep(attempt * 2)
-                continue
-
-            return True
-        except requests.exceptions.RequestException as e:
-            log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال الصورة: {e}")
-            time.sleep(attempt * 2)
-
-    return False
-
-
 def send_telegram_notification(text, chat_id):
     """يرسل نص جاهز لأي chat_id (شات شخصي أو قناة)."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
@@ -340,22 +270,7 @@ def main():
         sent = send_telegram_notification(personal_text, TELEGRAM_CHAT_ID)
 
         if TELEGRAM_CHANNEL_ID:
-            image_url = fetch_article_image(article["link"])
-            channel_body = f"⚽ {category}\n\n{full_article}"
-
-            if image_url:
-                caption = channel_body[:TELEGRAM_CAPTION_MAX_LEN]
-                photo_sent = send_telegram_photo(image_url, caption, TELEGRAM_CHANNEL_ID)
-
-                if photo_sent:
-                    if len(channel_body) > TELEGRAM_CAPTION_MAX_LEN:
-                        remainder = channel_body[TELEGRAM_CAPTION_MAX_LEN:]
-                        remainder_text = f"{remainder}\n\n🔗 {article['link']}"[:TELEGRAM_MAX_LEN]
-                        send_telegram_notification(remainder_text, TELEGRAM_CHANNEL_ID)
-                else:
-                    send_telegram_notification(channel_text, TELEGRAM_CHANNEL_ID)
-            else:
-                send_telegram_notification(channel_text, TELEGRAM_CHANNEL_ID)
+            send_telegram_notification(channel_text, TELEGRAM_CHANNEL_ID)
 
         state["processed_links"].append(article["link"])
 
