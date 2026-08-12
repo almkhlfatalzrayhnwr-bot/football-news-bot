@@ -5,7 +5,7 @@
 المصدر: RSS Feeds (مجانية)
 التصنيف: كلمات مفتاحية (بدون AI، مجاني وحتمي 100%)
 توليد المقالات: Google Gemini API (مجاني - نموذج Flash)
-الإشعار: Telegram Bot API (مجاني) — صورة + مقال كامل للقناة، إشعار مختصر للشات الشخصي
+الإشعار: Telegram Bot API (مجاني) — مقال كامل للقناة + إشعار مختصر للشات الشخصي
 التخزين: ملف JSON داخل المستودع نفسه (يُحدَّث ويُحفظ عبر git commit تلقائي)
 """
 
@@ -37,7 +37,7 @@ GEMINI_URL = (
 
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
-MAX_ARTICLES_PER_RUN = 4
+MAX_ARTICLES_PER_RUN = 12
 TELEGRAM_MAX_LEN = 4000
 
 CATEGORY_RULES = {
@@ -107,38 +107,6 @@ def classify(title, summary):
     return DEFAULT_CATEGORY
 
 
-def fetch_article_image(link):
-    """يفتح صفحة المقال الأصلية ويستخرج صورته الرئيسية من og:image (أو twitter:image احتياطياً)."""
-    import re
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; FootballNewsBot/1.0)"}
-        resp = requests.get(link, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-        if not resp.ok:
-            return None
-
-        html = resp.text[:200000]
-
-        for prop in ["og:image", "twitter:image"]:
-            match = re.search(
-                rf'<meta[^>]+property=["\']{prop}["\'][^>]+content=["\']([^"\']+)["\']',
-                html, re.IGNORECASE,
-            )
-            if not match:
-                match = re.search(
-                    rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{prop}["\']',
-                    html, re.IGNORECASE,
-                )
-            if match:
-                image_url = match.group(1)
-                if image_url.startswith("http"):
-                    return image_url
-        return None
-    except requests.exceptions.RequestException:
-        return None
-    except Exception:
-        return None
-
-
 def escape_html(text):
     """يهرّب رموز HTML الخاصة (& < >) عشان تليجرام يقبل النص بصيغة HTML بأمان."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -165,29 +133,13 @@ def strip_markdown(text):
     return "\n".join(lines).replace("*", "").strip()
 
 
-GEMINI_MIN_INTERVAL = 12  # ثانية بين كل استدعاء وآخر، هامش أمان أكبر تحت حد 10 طلبات/دقيقة
-_last_gemini_call_time = [0]
-
-
-def _wait_for_gemini_rate_limit():
-    elapsed = time.time() - _last_gemini_call_time[0]
-    if elapsed < GEMINI_MIN_INTERVAL:
-        time.sleep(GEMINI_MIN_INTERVAL - elapsed)
-    _last_gemini_call_time[0] = time.time()
-
-
 def generate_article(title, summary, category):
     """
     يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي.
     عند أي فشل، يرجع نسخة احتياطية بسيطة من العنوان + الملخص.
     """
     summary = strip_html(summary)
-
-    title_core = title.split(" - ")[0].strip()
-    if summary.strip().startswith(title_core) or title_core in summary[:len(title_core) + 20]:
-        fallback_text = title.strip()
-    else:
-        fallback_text = f"{title}\n\n{summary}".strip()
+    fallback_text = f"{title}\n\n{summary}".strip()
 
     if not GEMINI_API_KEY:
         log.warning("لم يتم ضبط GEMINI_API_KEY — سيُستخدم نص مختصر بدل المقال الكامل")
@@ -220,7 +172,6 @@ def generate_article(title, summary, category):
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            _wait_for_gemini_rate_limit()
             resp = requests.post(GEMINI_URL, json=payload, timeout=REQUEST_TIMEOUT)
 
             if resp.status_code == 429:
@@ -258,44 +209,6 @@ def generate_article(title, summary, category):
 
     log.error(f"فشل توليد المقال نهائياً عبر Gemini، استخدام النسخة المختصرة: {title}")
     return fallback_text
-
-
-TELEGRAM_CAPTION_MAX_LEN = 1000
-
-
-def send_telegram_photo(image_url, caption, chat_id, parse_mode=None):
-    """يرسل صورة مع نص مرفق (caption) لأي chat_id. يرجع True/False حسب النجاح."""
-    if not TELEGRAM_BOT_TOKEN or not chat_id:
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    payload = {"chat_id": chat_id, "photo": image_url, "caption": caption}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 429:
-                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
-                log.warning(f"Telegram طلب الانتظار {retry_after} ثانية (rate limit)")
-                time.sleep(retry_after + 1)
-                continue
-
-            if not resp.ok:
-                log.warning(
-                    f"إرسال الصورة فشل (محاولة {attempt}/{MAX_RETRIES}, chat_id={chat_id}): "
-                    f"{resp.status_code} - {resp.text}"
-                )
-                time.sleep(attempt * 2)
-                continue
-
-            return True
-        except requests.exceptions.RequestException as e:
-            log.warning(f"محاولة {attempt}/{MAX_RETRIES} فشلت في إرسال الصورة: {e}")
-            time.sleep(attempt * 2)
-
-    return False
 
 
 def send_telegram_notification(text, chat_id, parse_mode=None):
@@ -370,21 +283,7 @@ def main():
         sent = send_telegram_notification(personal_text, TELEGRAM_CHAT_ID)
 
         if TELEGRAM_CHANNEL_ID:
-            image_url = fetch_article_image(article["link"])
-            link_html = f'<a href="{article["link"]}">🔗 اقرأ المزيد</a>'
-
-            if image_url:
-                caption_html = f"⚽ {escape_html(category)}\n\n{escape_html(full_article)}\n\n{link_html}"
-                if len(caption_html) > TELEGRAM_CAPTION_MAX_LEN:
-                    short_caption = f"⚽ {escape_html(category)}\n\n{escape_html(full_article)}"
-                    short_caption = short_caption[:TELEGRAM_CAPTION_MAX_LEN - len(link_html) - 5]
-                    caption_html = f"{short_caption}...\n\n{link_html}"
-
-                photo_sent = send_telegram_photo(image_url, caption_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
-                if not photo_sent:
-                    send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
-            else:
-                send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
+            send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
 
         state["processed_links"].append(article["link"])
 
