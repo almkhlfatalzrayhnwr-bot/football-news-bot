@@ -37,7 +37,7 @@ GEMINI_URL = (
 
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
-MAX_ARTICLES_PER_RUN = 12
+MAX_ARTICLES_PER_RUN = 6
 TELEGRAM_MAX_LEN = 4000
 
 CATEGORY_RULES = {
@@ -165,13 +165,30 @@ def strip_markdown(text):
     return "\n".join(lines).replace("*", "").strip()
 
 
+GEMINI_MIN_INTERVAL = 7  # ثانية بين كل استدعاء وآخر، عشان نفضل تحت حد 10 طلبات/دقيقة بهامش أمان
+_last_gemini_call_time = [0]
+
+
+def _wait_for_gemini_rate_limit():
+    elapsed = time.time() - _last_gemini_call_time[0]
+    if elapsed < GEMINI_MIN_INTERVAL:
+        time.sleep(GEMINI_MIN_INTERVAL - elapsed)
+    _last_gemini_call_time[0] = time.time()
+
+
 def generate_article(title, summary, category):
     """
     يبعت العنوان والملخص لـ Gemini ويرجّع مقال عربي مُحرَّر بأسلوب صحفي.
     عند أي فشل، يرجع نسخة احتياطية بسيطة من العنوان + الملخص.
     """
     summary = strip_html(summary)
-    fallback_text = f"{title}\n\n{summary}".strip()
+
+    # ملخصات Google News غالباً بتكرر العنوان نفسه + اسم المصدر، فنتفادى التكرار الواضح
+    title_core = title.split(" - ")[0].strip()
+    if summary.strip().startswith(title_core) or title_core in summary[:len(title_core) + 20]:
+        fallback_text = title.strip()
+    else:
+        fallback_text = f"{title}\n\n{summary}".strip()
 
     if not GEMINI_API_KEY:
         log.warning("لم يتم ضبط GEMINI_API_KEY — سيُستخدم نص مختصر بدل المقال الكامل")
@@ -204,6 +221,7 @@ def generate_article(title, summary, category):
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            _wait_for_gemini_rate_limit()
             resp = requests.post(GEMINI_URL, json=payload, timeout=REQUEST_TIMEOUT)
 
             if resp.status_code == 429:
