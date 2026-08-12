@@ -107,6 +107,11 @@ def classify(title, summary):
     return DEFAULT_CATEGORY
 
 
+def escape_html(text):
+    """يهرّب رموز HTML الخاصة (& < >) عشان تليجرام يقبل النص بصيغة HTML بأمان."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def strip_html(text):
     """يشيل أكواد HTML الخام اللي أحياناً بتوصل جوه حقل summary من Google News RSS."""
     import re
@@ -206,19 +211,23 @@ def generate_article(title, summary, category):
     return fallback_text
 
 
-def send_telegram_notification(text, chat_id):
-    """يرسل نص جاهز لأي chat_id (شات شخصي أو قناة)."""
+def send_telegram_notification(text, chat_id, parse_mode=None):
+    """يرسل نص جاهز لأي chat_id (شات شخصي أو قناة). parse_mode='HTML' لدعم الروابط القصيرة."""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
         log.warning("لم يتم ضبط TELEGRAM_BOT_TOKEN أو chat_id — تخطي الإشعار")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+        payload["disable_web_page_preview"] = False
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = requests.post(
                 url,
-                json={"chat_id": chat_id, "text": text},
+                json=payload,
                 timeout=REQUEST_TIMEOUT,
             )
             if resp.status_code == 429:
@@ -262,15 +271,19 @@ def main():
         category = classify(article["title"], article["summary"])
 
         full_article = generate_article(article["title"], article["summary"], category)
-        channel_text = f"⚽ {category}\n\n{full_article}\n\n🔗 {article['link']}"
-        channel_text = channel_text[:TELEGRAM_MAX_LEN]
+        channel_text_html = (
+            f"⚽ {escape_html(category)}\n\n"
+            f"{escape_html(full_article)}\n\n"
+            f'<a href="{article["link"]}">🔗 اقرأ المزيد</a>'
+        )
+        channel_text_html = channel_text_html[:TELEGRAM_MAX_LEN]
 
         personal_text = f"⚽ التصنيف: {category}\n\n{article['title']}\n\n{article['link']}"
 
         sent = send_telegram_notification(personal_text, TELEGRAM_CHAT_ID)
 
         if TELEGRAM_CHANNEL_ID:
-            send_telegram_notification(channel_text, TELEGRAM_CHANNEL_ID)
+            send_telegram_notification(channel_text_html, TELEGRAM_CHANNEL_ID, parse_mode="HTML")
 
         state["processed_links"].append(article["link"])
 
